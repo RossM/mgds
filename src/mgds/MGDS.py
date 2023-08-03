@@ -1,5 +1,6 @@
 import gc
 import random
+import threading
 from abc import abstractmethod, ABCMeta
 from random import Random
 from typing import Any
@@ -11,14 +12,14 @@ from torch.utils.data import DataLoader, Dataset
 class PipelineModule(metaclass=ABCMeta):
     pipeline: 'LoadingPipeline'
 
+    __thread_local: threading.local
+
     __base_seed: int
     __module_index: int
 
-    __item_cache_index: int
-    __item_cache: dict
-    __length_cache: int
-
     def __init__(self):
+        self.__thread_local = threading.local()
+
         self.clear_item_cache()
 
     def init(self, pipeline: 'LoadingPipeline', base_seed: int, module_index: int):
@@ -28,9 +29,13 @@ class PipelineModule(metaclass=ABCMeta):
         self.__module_index = module_index
 
     def clear_item_cache(self):
-        self.__item_cache_index = -1
-        self.__item_cache = {}
-        self.__length_cache = -1
+        self.__thread_local = threading.local()
+
+    def check_item_cache(self):
+        if not hasattr(self.__thread_local, "item_cache_index"):
+            self.__thread_local.item_cache_index = -1
+            self.__thread_local.item_cache = {}
+            self.__thread_local.length_cache = -1
 
     def get_previous_item(self, name: str, index: int):
         split_name = name.split('.')
@@ -42,22 +47,24 @@ class PipelineModule(metaclass=ABCMeta):
         for previous_module_index in range(self.__module_index - 1, -1, -1):
             module = self.pipeline.modules[previous_module_index]
             if item_name in module.get_outputs():
+                module.check_item_cache()
+
                 # item is cached
-                if module.__item_cache_index == index and item_name in module.__item_cache.keys():
-                    item = module.__item_cache[item_name]
+                if module.__thread_local.item_cache_index == index and item_name in module.__thread_local.item_cache.keys():
+                    item = module.__thread_local.item_cache[item_name]
 
                 # the wrong index is cached, clear cache and recalculate
-                elif module.__item_cache_index != index:
+                elif module.__thread_local.item_cache_index != index:
                     item = module.get_item(index, item_name)
-                    module.__item_cache_index = index
-                    module.__item_cache = item
+                    module.__thread_local.item_cache_index = index
+                    module.__thread_local.item_cache = item
                     item = item[item_name]
 
                 # the item is cached and the index is correct, but the item_name is not part of the cache
                 # recalculate and add to the cache
-                elif item_name not in module.__item_cache.keys():
+                elif item_name not in module.__thread_local.item_cache.keys():
                     item = module.get_item(index, item_name)
-                    module.__item_cache.update(item)
+                    module.__thread_local.item_cache.update(item)
                     item = item[item_name]
 
                 # if the item was found, break the loop
@@ -78,9 +85,11 @@ class PipelineModule(metaclass=ABCMeta):
         for previous_module_index in range(self.__module_index - 1, -1, -1):
             module = self.pipeline.modules[previous_module_index]
             if name in module.get_outputs():
-                if module.__length_cache < 0:
-                    module.__length_cache = module.length()
-                return module.__length_cache
+                module.check_item_cache()
+
+                if module.__thread_local.length_cache < 0:
+                    module.__thread_local.length_cache = module.length()
+                return module.__thread_local.length_cache
 
     def get_previous_meta(self, name: str):
         for previous_module_index in range(self.__module_index - 1, -1, -1):
@@ -221,6 +230,7 @@ class LoadingPipeline:
     batch_size: int
     initial_epoch: int
     initial_epoch_sample: int
+    num_workers: int
 
     def __init__(
             self,
@@ -234,6 +244,7 @@ class LoadingPipeline:
             seed: int,
             initial_epoch: int = 0,
             initial_epoch_sample: int = 0,
+            num_workers: int = 0,
     ):
         self.device = device
         self.dtype = dtype
@@ -253,6 +264,8 @@ class LoadingPipeline:
         self.batch_size = batch_size
         self.initial_epoch = initial_epoch
         self.initial_epoch_sample = initial_epoch_sample - (initial_epoch_sample % batch_size)
+
+        self.num_workers = num_workers
 
         self.current_epoch = -1
         self.last_initialized_epoch = -1
@@ -345,14 +358,26 @@ class MGDS(Dataset):
             batch_size: int,
             seed: int = 42,
             initial_epoch: int = 0,
-            initial_epoch_sample: int = 0
+            initial_epoch_sample: int = 0,
+            num_workers: int = 0,
     ):
         self.device = device
         self.dtype = dtype
         self.allow_mixed_precision = allow_mixed_precision
         seed = (random.randint(-(1 << 30), 1 << 30) if seed == -1 else seed)
-        self.loading_pipeline = LoadingPipeline(device, dtype, allow_mixed_precision, concepts, settings, definition,
-                                                batch_size, seed, initial_epoch, initial_epoch_sample)
+        self.loading_pipeline = LoadingPipeline(
+            device=device,
+            dtype=dtype,
+            allow_mixed_precision=allow_mixed_precision,
+            concepts=concepts,
+            settings=settings,
+            modules=definition,
+            batch_size=batch_size,
+            seed=seed,
+            initial_epoch=initial_epoch,
+            initial_epoch_sample=initial_epoch_sample,
+            num_workers=num_workers,
+        )
 
         self.loading_pipeline.start()
 
@@ -370,5 +395,10 @@ class MGDS(Dataset):
 
 
 class TrainDataLoader(DataLoader):
-    def __init__(self, dataset: MGDS, batch_size):
-        super(TrainDataLoader, self).__init__(dataset, batch_size=batch_size, drop_last=True)
+    def __init__(
+            self,
+            dataset: MGDS,
+            batch_size: int,
+            num_workers: int = 0,
+    ):
+        super(TrainDataLoader, self).__init__(dataset, batch_size=batch_size, drop_last=True, num_workers=num_workers)

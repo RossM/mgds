@@ -10,8 +10,8 @@ BATCH_SIZE = 4
 
 
 def test():
-    base_model_path = '..\\..\\models\\diffusers-base\\sdxl-v0-9-base'
-    # base_model_path = '..\\..\\models\\diffusers-base\\sd-v1-5-inpainting'
+    base_model_path = '..\\models\\diffusers-base\\sdxl-v0-9-base'
+    # base_model_path = '..\\models\\diffusers-base\\sd-v1-5-inpainting'
 
     vae = AutoencoderKL.from_pretrained(
         base_model_path,
@@ -47,7 +47,7 @@ def test():
         concepts=[
             {
                 'name': 'DS',
-                'path': '..\\..\\datasets\\dataset',
+                'path': '..\\datasets\\dataset',
                 'random_circular_crop': True,
                 'random_mask_rotate_crop': True,
                 'random_flip': True,
@@ -55,7 +55,7 @@ def test():
             },
             {
                 'name': 'DS4',
-                'path': '..\\..\\datasets\\dataset4',
+                'path': '..\\datasets\\dataset4',
                 'random_circular_crop': False,
                 'random_mask_rotate_crop': False,
                 'random_flip': False,

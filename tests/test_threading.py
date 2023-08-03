@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 sys.path.append(os.getcwd())
 
@@ -12,7 +13,7 @@ from src.mgds.TransformersDataLoaderModules import *
 DEVICE = 'cuda'
 DTYPE = torch.float32
 BATCH_SIZE = 4
-NUM_WORKERS = 1
+NUM_WORKERS = 4
 
 
 def test():
@@ -68,6 +69,8 @@ def test():
         OutputPipelineModule(names=['latent_image', 'latent_conditioning_image', 'latent_mask', 'latent_depth', 'tokens'])
     ]
 
+    #threading_test()
+
     ds = MGDS(
         device=torch.device(DEVICE),
         dtype=DTYPE,
@@ -85,21 +88,58 @@ def test():
         settings={},
         definition=[
             input_modules,
-            debug_modules,
+            #debug_modules,
             output_modules
         ],
         batch_size=BATCH_SIZE,
         seed=42,
         initial_epoch=0,
         initial_epoch_sample=10,
+        num_workers=NUM_WORKERS,
     )
-    dl = TrainDataLoader(ds, batch_size=BATCH_SIZE)
+    dl = TrainDataLoader(
+        ds,
+        batch_size=BATCH_SIZE,
+        num_workers=NUM_WORKERS,
+    )
 
-    for epoch in range(10):
-        ds.start_next_epoch()
-        for batch in tqdm(dl):
-            pass
 
+    # for epoch in range(10):
+    #     ds.start_next_epoch()
+    #     for batch in tqdm(dl):
+    #         pass
+
+
+def threading_test():
+    length = 100
+    current_progress = 0
+    in_lock = threading.Lock()
+    out_lock = threading.Lock()
+    progress_bar = tqdm(total=length)
+
+    def __cache_one_item(index: int):
+        time.sleep(1)
+        with out_lock:
+            print(index)
+            progress_bar.update(1)
+
+    def __worker():
+        nonlocal current_progress
+        stopped = False
+
+        while not stopped:
+            with in_lock:
+                index = current_progress
+                current_progress += 1
+
+            if index >= length:
+                stopped = True
+            else:
+                __cache_one_item(index)
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        for i in range(10):
+            pool.submit(__worker)
 
 if __name__ == '__main__':
     test()

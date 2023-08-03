@@ -1,5 +1,8 @@
 import math
 import os
+import threading
+import traceback
+from concurrent.futures import ThreadPoolExecutor
 from random import Random
 from typing import Any
 
@@ -11,6 +14,7 @@ from torchvision import transforms
 from torchvision.transforms import functional, InterpolationMode
 from tqdm import tqdm
 
+from tests import test_threading
 from .MGDS import PipelineModule
 
 
@@ -477,6 +481,7 @@ class ScaleCropImage(PipelineModule):
         crop_resolution = self.get_previous_item(self.crop_resolution_in_name, index)
         enable_crop_jitter = self.get_previous_item(self.enable_crop_jitter_in_name, index)
 
+        print("in ScaleCropImage")
         resize = transforms.Resize(scale_resolution, interpolation=transforms.InterpolationMode.BILINEAR)
         image = resize(image)
 
@@ -947,6 +952,7 @@ class Downscale(PipelineModule):
 
     def get_item(self, index: int, requested_name: str = None) -> dict:
         image = self.get_previous_item(self.in_name, index)
+        print("downscaling")
 
         size = (int(image.shape[1] / self.factor), int(image.shape[2] / self.factor))
 
@@ -1060,7 +1066,12 @@ class DiskCache(PipelineModule):
             length = self.length()
             self.aggregate_cache = []
 
-            for index in tqdm(range(length), desc='caching'):
+            current_progress = 0
+            in_lock = threading.Lock()
+            out_lock = threading.Lock()
+            progress_bar = tqdm(total=length)
+
+            def __cache_one_item(index: int):
                 if index % 100 == 0:
                     self._torch_gc()
 
@@ -1073,7 +1084,36 @@ class DiskCache(PipelineModule):
                     aggregate_item[name] = self.get_previous_item(name, index)
 
                 torch.save(split_item, os.path.realpath(os.path.join(cache_dir, str(index) + '.pt')))
-                self.aggregate_cache.append(aggregate_item)
+
+                with out_lock:
+                    self.aggregate_cache.append(aggregate_item)
+                    progress_bar.update(1)
+
+            def __cache_worker():
+                nonlocal current_progress
+                stopped = False
+
+                try:
+                    while not stopped:
+                        with in_lock:
+                            index = current_progress
+                            current_progress += 1
+
+                        if index >= length:
+                            stopped = True
+                        else:
+                            __cache_one_item(index)
+                except:
+                    traceback.print_exc()
+
+            if self.pipeline.num_workers > 0:
+                with ThreadPoolExecutor(max_workers=self.pipeline.num_workers) as pool:
+                    for i in range(self.pipeline.num_workers):
+                        pool.submit(__cache_worker)
+            else:
+                __cache_worker()
+
+            progress_bar.close()
 
             torch.save(self.aggregate_cache, os.path.realpath(os.path.join(cache_dir, 'aggregate.pt')))
 
@@ -1454,6 +1494,8 @@ class RandomMaskRotateCrop(PipelineModule):
         enabled = self.get_previous_item(self.enabled_in_name, index)
 
         mask = self.get_previous_item(self.mask_name, index)
+
+        print("in RandomMaskRotateCrop")
 
         item = {}
         for name in self.additional_names:
