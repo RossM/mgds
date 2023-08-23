@@ -50,14 +50,15 @@ class GenerateDepth(PipelineModule):
         with torch.no_grad():
             with torch.autocast(self.pipeline.device.type, self.pipeline.dtype) if allow_mixed_precision \
                     else nullcontext():
-                image = self.image_depth_processor(image, return_tensors="pt").pixel_values
-                image = image.to(self.pipeline.device)
-                image = image if allow_mixed_precision else image.to(self.depth_estimator.dtype)
-                depth = self.depth_estimator(image).predicted_depth
+                with self.pipeline.cuda_lock:
+                    image = self.image_depth_processor(image, return_tensors="pt").pixel_values
+                    image = image.to(self.pipeline.device)
+                    image = image if allow_mixed_precision else image.to(self.depth_estimator.dtype)
+                    depth = self.depth_estimator(image).predicted_depth
 
-                depth_min = torch.amin(depth, dim=[1, 2], keepdim=True)
-                depth_max = torch.amax(depth, dim=[1, 2], keepdim=True)
-                depth = 2.0 * (depth - depth_min) / (depth_max - depth_min) - 1.0
+                    depth_min = torch.amin(depth, dim=[1, 2], keepdim=True)
+                    depth_max = torch.amax(depth, dim=[1, 2], keepdim=True)
+                    depth = 2.0 * (depth - depth_min) / (depth_max - depth_min) - 1.0
 
         return {
             self.image_out_name: depth
@@ -100,8 +101,9 @@ class Tokenize(PipelineModule):
             return_tensors="pt",
         )
 
-        tokens = tokenizer_output.input_ids.to(self.pipeline.device)
-        mask = tokenizer_output.attention_mask.to(self.pipeline.device)
+        with self.pipeline.cuda_lock:
+            tokens = tokenizer_output.input_ids.to(self.pipeline.device)
+            mask = tokenizer_output.attention_mask.to(self.pipeline.device)
 
         tokens = tokens.squeeze()
 
@@ -152,7 +154,8 @@ class EncodeClipText(PipelineModule):
         with torch.no_grad():
             with torch.autocast(self.pipeline.device.type, self.pipeline.dtype) if allow_mixed_precision \
                     else nullcontext():
-                text_encoder_output = self.text_encoder(tokens, output_hidden_states=True, return_dict=True)
+                with self.pipeline.cuda_lock:
+                    text_encoder_output = self.text_encoder(tokens, output_hidden_states=True, return_dict=True)
 
         hidden_states = text_encoder_output.hidden_states
         if self.pooled_out_name:
@@ -160,8 +163,9 @@ class EncodeClipText(PipelineModule):
         else:
             pooled_state = None
 
-        hidden_states = [hidden_state.squeeze() for hidden_state in hidden_states]
-        pooled_state = None if pooled_state is None else pooled_state.squeeze()
+        with self.pipeline.cuda_lock:
+            hidden_states = [hidden_state.squeeze() for hidden_state in hidden_states]
+            pooled_state = None if pooled_state is None else pooled_state.squeeze()
 
         hidden_state = hidden_states[self.hidden_state_output_index]
 

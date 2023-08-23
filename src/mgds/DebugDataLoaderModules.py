@@ -44,9 +44,10 @@ class SaveImage(PipelineModule):
                 transforms.ToPILImage(),
             ])
 
-            image_tensor = (image_tensor - self.in_range_min) / (self.in_range_max - self.in_range_min)
+            with self.pipeline.cuda_lock:
+                image_tensor = (image_tensor - self.in_range_min) / (self.in_range_max - self.in_range_min)
+                image = t(image_tensor)
 
-            image = t(image_tensor)
             image.save(os.path.join(path, name + '-' + self.image_in_name + ext))
 
     def get_item(self, index: int, requested_name: str = None) -> dict:
@@ -121,8 +122,9 @@ class DecodeVAE(PipelineModule):
         with torch.no_grad():
             with torch.autocast(self.pipeline.device.type, self.pipeline.dtype) if allow_mixed_precision \
                     else nullcontext():
-                image = self.vae.decode(latent_image.unsqueeze(0)).sample
-                image = image.clamp(-1, 1).squeeze()
+                with self.pipeline.cuda_lock:
+                    image = self.vae.decode(latent_image.unsqueeze(0)).sample
+                    image = image.clamp(-1, 1).squeeze()
 
         return {
             self.out_name: image
@@ -163,8 +165,9 @@ class DecodeMoVQ(PipelineModule):
         with torch.no_grad():
             with torch.autocast(self.pipeline.device.type, self.pipeline.dtype) if allow_mixed_precision \
                     else nullcontext():
-                image = self.movq.decode(latent_image.unsqueeze(0)).sample
-                image = image.clamp(-1, 1).squeeze()
+                with self.pipeline.cuda_lock:
+                    image = self.movq.decode(latent_image.unsqueeze(0)).sample
+                    image = image.clamp(-1, 1).squeeze()
 
         return {
             self.out_name: image,

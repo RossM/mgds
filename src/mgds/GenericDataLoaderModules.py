@@ -14,7 +14,6 @@ from torchvision import transforms
 from torchvision.transforms import functional, InterpolationMode
 from tqdm import tqdm
 
-from tests import test_threading
 from .MGDS import PipelineModule
 
 
@@ -481,19 +480,19 @@ class ScaleCropImage(PipelineModule):
         crop_resolution = self.get_previous_item(self.crop_resolution_in_name, index)
         enable_crop_jitter = self.get_previous_item(self.enable_crop_jitter_in_name, index)
 
-        print("in ScaleCropImage")
-        resize = transforms.Resize(scale_resolution, interpolation=transforms.InterpolationMode.BILINEAR)
-        image = resize(image)
+        with self.pipeline.cuda_lock:
+            resize = transforms.Resize(scale_resolution, interpolation=transforms.InterpolationMode.BILINEAR)
+            image = resize(image)
 
-        if enable_crop_jitter:
-            y_offset = (scale_resolution[0] - crop_resolution[0]) // 2
-            x_offset = (scale_resolution[1] - crop_resolution[1]) // 2
-        else:
-            y_offset = rand.randint(0, scale_resolution[0] - crop_resolution[0])
-            x_offset = rand.randint(0, scale_resolution[1] - crop_resolution[1])
+            if enable_crop_jitter:
+                y_offset = (scale_resolution[0] - crop_resolution[0]) // 2
+                x_offset = (scale_resolution[1] - crop_resolution[1]) // 2
+            else:
+                y_offset = rand.randint(0, scale_resolution[0] - crop_resolution[0])
+                x_offset = rand.randint(0, scale_resolution[1] - crop_resolution[1])
 
-        crop_offset = (y_offset, x_offset)
-        image = functional.crop(image, y_offset, x_offset, crop_resolution[0], crop_resolution[1])
+            crop_offset = (y_offset, x_offset)
+            image = functional.crop(image, y_offset, x_offset, crop_resolution[0], crop_resolution[1])
 
         return {
             self.crop_offset_out_name: crop_offset,
@@ -724,7 +723,8 @@ class RandomFlip(PipelineModule):
         for name in self.names:
             previous_item = self.get_previous_item(name, index)
             if flip:
-                previous_item = functional.hflip(previous_item)
+                with self.pipeline.cuda_lock:
+                    previous_item = functional.hflip(previous_item)
             item[name] = previous_item
 
         return item
@@ -763,11 +763,12 @@ class RandomRotate(PipelineModule):
         for name in self.names:
             previous_item = self.get_previous_item(name, index)
             if enabled:
-                orig_dtype = previous_item.dtype
-                if orig_dtype == torch.bfloat16:
-                    previous_item = previous_item.to(dtype=torch.float32)
-                previous_item = functional.rotate(previous_item, angle, interpolation=InterpolationMode.BILINEAR)
-                previous_item = previous_item.to(dtype=orig_dtype)
+                with self.pipeline.cuda_lock:
+                    orig_dtype = previous_item.dtype
+                    if orig_dtype == torch.bfloat16:
+                        previous_item = previous_item.to(dtype=torch.float32)
+                    previous_item = functional.rotate(previous_item, angle, interpolation=InterpolationMode.BILINEAR)
+                    previous_item = previous_item.to(dtype=orig_dtype)
 
             item[name] = previous_item
 
@@ -808,7 +809,8 @@ class RandomBrightness(PipelineModule):
         for name in self.names:
             previous_item = self.get_previous_item(name, index)
             if enabled:
-                previous_item = functional.adjust_brightness(previous_item, strength)
+                with self.pipeline.cuda_lock:
+                    previous_item = functional.adjust_brightness(previous_item, strength)
             item[name] = previous_item
 
         return item
@@ -848,7 +850,8 @@ class RandomContrast(PipelineModule):
         for name in self.names:
             previous_item = self.get_previous_item(name, index)
             if enabled:
-                previous_item = functional.adjust_contrast(previous_item, strength)
+                with self.pipeline.cuda_lock:
+                    previous_item = functional.adjust_contrast(previous_item, strength)
             item[name] = previous_item
 
         return item
@@ -888,7 +891,8 @@ class RandomSaturation(PipelineModule):
         for name in self.names:
             previous_item = self.get_previous_item(name, index)
             if enabled:
-                previous_item = functional.adjust_saturation(previous_item, strength)
+                with self.pipeline.cuda_lock:
+                    previous_item = functional.adjust_saturation(previous_item, strength)
             item[name] = previous_item
 
         return item
@@ -928,7 +932,8 @@ class RandomHue(PipelineModule):
         for name in self.names:
             previous_item = self.get_previous_item(name, index)
             if enabled:
-                previous_item = functional.adjust_hue(previous_item, strength)
+                with self.pipeline.cuda_lock:
+                    previous_item = functional.adjust_hue(previous_item, strength)
             item[name] = previous_item
 
         return item
@@ -960,7 +965,8 @@ class Downscale(PipelineModule):
             transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
         ])
 
-        image = t(image)
+        with self.pipeline.cuda_lock:
+            image = t(image)
 
         return {
             self.out_name: image
@@ -992,7 +998,8 @@ class Upscale(PipelineModule):
             transforms.Resize(size, interpolation=transforms.InterpolationMode.BILINEAR),
         ])
 
-        image = t(image)
+        with self.pipeline.cuda_lock:
+            image = t(image)
 
         return {
             self.out_name: image
@@ -1309,7 +1316,8 @@ class GenerateMaskedConditioningImage(PipelineModule):
 
         image_midpoint = (self.image_range_max - self.image_range_min) / 2.0
 
-        conditioning_image = (image * (1 - mask)) + (mask * image_midpoint)
+        with self.pipeline.cuda_lock:
+            conditioning_image = (image * (1 - mask)) + (mask * image_midpoint)
 
         return {
             self.image_out_name: conditioning_image
@@ -1504,7 +1512,8 @@ class RandomMaskRotateCrop(PipelineModule):
         if enabled:
             rand = self._get_rand(index)
 
-            self.__apply(rand, mask, item)
+            with self.pipeline.cuda_lock:
+                self.__apply(rand, mask, item)
         else:
             item[self.mask_name] = mask
 
@@ -1597,15 +1606,16 @@ class RandomCircularMaskShrink(PipelineModule):
         if enabled:
             rand = self._get_rand(index)
 
-            random_center = self.__get_random_point_in_mask(mask, rand.randint(0, 1 << 30))
-            radial_gradient = self.__get_radial_gradient(mask, random_center)
+            with self.pipeline.cuda_lock:
+                random_center = self.__get_random_point_in_mask(mask, rand.randint(0, 1 << 30))
+                radial_gradient = self.__get_radial_gradient(mask, random_center)
 
-            max_radius = (mask * radial_gradient).max().item()
-            radius = rand.uniform(self.shrink_factor_min, self.shrink_factor_max) * max_radius
+                max_radius = (mask * radial_gradient).max().item()
+                radius = rand.uniform(self.shrink_factor_min, self.shrink_factor_max) * max_radius
 
-            disc_mask = self.__get_disc_mask(radial_gradient, radius)
+                disc_mask = self.__get_disc_mask(radial_gradient, radius)
 
-            result_mask = mask * disc_mask
+                result_mask = mask * disc_mask
 
             return {
                 self.mask_name: result_mask,

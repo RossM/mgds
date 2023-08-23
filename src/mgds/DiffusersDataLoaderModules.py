@@ -43,7 +43,8 @@ class EncodeVAE(PipelineModule):
         with torch.no_grad():
             with torch.autocast(self.pipeline.device.type, self.pipeline.dtype) if allow_mixed_precision \
                     else nullcontext():
-                latent_distribution = self.vae.encode(image.unsqueeze(0)).latent_dist
+                with self.pipeline.cuda_lock:
+                    latent_distribution = self.vae.encode(image.unsqueeze(0)).latent_dist
 
         return {
             self.out_name: latent_distribution
@@ -86,7 +87,8 @@ class EncodeMoVQ(PipelineModule):
         with torch.no_grad():
             with torch.autocast(self.pipeline.device.type, self.pipeline.dtype) if allow_mixed_precision \
                     else nullcontext():
-                latent_image = self.movq.encode(image.unsqueeze(0)).latents
+                with self.pipeline.cuda_lock:
+                    latent_image = self.movq.encode(image.unsqueeze(0)).latents
 
         latent_image = latent_image.squeeze()
 
@@ -114,14 +116,15 @@ class SampleVAEDistribution(PipelineModule):
     def get_item(self, index: int, requested_name: str = None) -> dict:
         distribution = self.get_previous_item(self.in_name, index)
 
-        if self.mode == 'sample':
-            latent = distribution.sample()
-        elif self.mode == 'mean':
-            latent = distribution.mode()
-        else:
-            raise Exception('method not supported')
+        with self.pipeline.cuda_lock:
+            if self.mode == 'sample':
+                latent = distribution.sample()
+            elif self.mode == 'mean':
+                latent = distribution.mode()
+            else:
+                raise Exception('method not supported')
 
-        latent = latent.squeeze()
+            latent = latent.squeeze()
 
         return {
             self.out_name: latent
@@ -171,16 +174,17 @@ class RandomLatentMaskRemove(PipelineModule):
         with torch.no_grad():
             with torch.autocast(self.pipeline.device.type, self.pipeline.dtype) if allow_mixed_precision \
                     else nullcontext():
-                for resolution in possible_resolutions:
-                    blank_conditioning_image = torch.zeros(
-                        resolution,
-                        dtype=self.pipeline.dtype if allow_mixed_precision else self.vae.dtype,
-                        device=self.pipeline.device
-                    )
-                    blank_conditioning_image = blank_conditioning_image\
-                        .unsqueeze(0).unsqueeze(0).expand([-1, 3, -1, -1])
-                    self.blank_conditioning_image_cache[resolution] = self.vae.encode(
-                        blank_conditioning_image).latent_dist.mode().squeeze()
+                with self.pipeline.cuda_lock:
+                    for resolution in possible_resolutions:
+                        blank_conditioning_image = torch.zeros(
+                            resolution,
+                            dtype=self.pipeline.dtype if allow_mixed_precision else self.vae.dtype,
+                            device=self.pipeline.device
+                        )
+                        blank_conditioning_image = blank_conditioning_image\
+                            .unsqueeze(0).unsqueeze(0).expand([-1, 3, -1, -1])
+                        self.blank_conditioning_image_cache[resolution] = self.vae.encode(
+                            blank_conditioning_image).latent_dist.mode().squeeze()
 
     def get_item(self, index: int, requested_name: str = None) -> dict:
         rand = self._get_rand(index)

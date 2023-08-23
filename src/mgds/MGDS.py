@@ -2,6 +2,7 @@ import gc
 import random
 import threading
 from abc import abstractmethod, ABCMeta
+from contextlib import nullcontext
 from random import Random
 from typing import Any
 
@@ -231,6 +232,7 @@ class LoadingPipeline:
     initial_epoch: int
     initial_epoch_sample: int
     num_workers: int
+    cuda_lock: threading.Lock
 
     def __init__(
             self,
@@ -266,6 +268,7 @@ class LoadingPipeline:
         self.initial_epoch_sample = initial_epoch_sample - (initial_epoch_sample % batch_size)
 
         self.num_workers = num_workers
+        self.cuda_lock = nullcontext()
 
         self.current_epoch = -1
         self.last_initialized_epoch = -1
