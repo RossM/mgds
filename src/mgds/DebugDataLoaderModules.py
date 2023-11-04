@@ -12,11 +12,20 @@ from .MGDS import PipelineModule
 
 
 class SaveImage(PipelineModule):
-    def __init__(self, image_in_name: str, original_path_in_name: str, path: str, in_range_min: float, in_range_max: float):
+    def __init__(
+            self,
+            image_in_name: str,
+            original_path_in_name: str,
+            path: str,
+            include_index: bool,
+            in_range_min: float,
+            in_range_max: float,
+    ):
         super(SaveImage, self).__init__()
         self.image_in_name = image_in_name
         self.original_path_in_name = original_path_in_name
         self.path = path
+        self.include_index = include_index
         self.in_range_min = in_range_min
         self.in_range_max = in_range_max
 
@@ -34,31 +43,44 @@ class SaveImage(PipelineModule):
         if not os.path.exists(path):
             os.makedirs(path)
 
-        for index in tqdm(range(self.get_previous_length(self.original_path_in_name)), desc='writing debug images for \'' + self.image_in_name + '\''):
-            image_tensor = self.get_previous_item(self.image_in_name, index)
-            original_path = self.get_previous_item(self.original_path_in_name, index)
-            name = os.path.basename(original_path)
-            name, ext = os.path.splitext(name)
+        try:
+            for index in tqdm(range(self.get_previous_length(self.original_path_in_name)),
+                              desc='writing debug images for \'' + self.image_in_name + '\''):
+                image_tensor = self.get_previous_item(self.image_in_name, index)
+                original_path = self.get_previous_item(self.original_path_in_name, index)
+                name = os.path.basename(original_path)
+                name, ext = os.path.splitext(name)
+                if self.include_index:
+                    name = str(index) + "-" + name
 
-            t = transforms.Compose([
-                transforms.ToPILImage(),
-            ])
+                t = transforms.Compose([
+                    transforms.ToPILImage(),
+                ])
 
-            image_tensor = (image_tensor - self.in_range_min) / (self.in_range_max - self.in_range_min)
+                image_tensor = (image_tensor - self.in_range_min) / (self.in_range_max - self.in_range_min)
 
-            image = t(image_tensor)
-            image.save(os.path.join(path, name + '-' + self.image_in_name + ext))
+                image = t(image_tensor)
+                image.save(os.path.join(path, name + '-' + self.image_in_name + ext))
+        except StopIteration as e:
+            pass
 
     def get_item(self, index: int, requested_name: str = None) -> dict:
         return {}
 
 
 class SaveText(PipelineModule):
-    def __init__(self, text_in_name: str, original_path_in_name: str, path: str):
+    def __init__(
+            self,
+            text_in_name: str,
+            original_path_in_name: str,
+            path: str,
+            include_index: bool,
+    ):
         super(SaveText, self).__init__()
         self.text_in_name = text_in_name
         self.original_path_in_name = original_path_in_name
         self.path = path
+        self.include_index = include_index
 
     def length(self) -> int:
         return self.get_previous_length(self.text_in_name)
@@ -74,15 +96,20 @@ class SaveText(PipelineModule):
         if not os.path.exists(path):
             os.makedirs(path)
 
-        for index in tqdm(range(self.get_previous_length(self.original_path_in_name)), desc='writing debug text for \'' + self.text_in_name + '\''):
-            text = self.get_previous_item(self.text_in_name, index)
-            original_path = self.get_previous_item(self.original_path_in_name, index)
-            name = os.path.basename(original_path)
-            name, ext = os.path.splitext(name)
+        try:
+            for index in tqdm(range(self.get_previous_length(self.original_path_in_name)),
+                              desc='writing debug text for \'' + self.text_in_name + '\''):
+                text = self.get_previous_item(self.text_in_name, index)
+                original_path = self.get_previous_item(self.original_path_in_name, index)
+                name = os.path.basename(original_path)
+                name, ext = os.path.splitext(name)
+                if self.include_index:
+                    name = str(index) + "-" + name
 
-            with open(os.path.join(path, name + '-' + self.text_in_name + '.txt'), "w") as f:
-                f.write(text)
-
+                with open(os.path.join(path, name + '-' + self.text_in_name + '.txt'), "w") as f:
+                    f.write(text)
+        except StopIteration as e:
+            pass
     def get_item(self, index: int, requested_name: str = None) -> dict:
         return {}
 

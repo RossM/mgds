@@ -1,7 +1,7 @@
 import math
 import os
 from random import Random
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -11,7 +11,7 @@ from torchvision import transforms
 from torchvision.transforms import functional, InterpolationMode
 from tqdm import tqdm
 
-from .MGDS import PipelineModule
+from .MGDS import PipelineModule, RandomAccessNotSupported
 
 
 class CollectPaths(PipelineModule):
@@ -477,7 +477,8 @@ class ScaleCropImage(PipelineModule):
         crop_resolution = self.get_previous_item(self.crop_resolution_in_name, index)
         enable_crop_jitter = self.get_previous_item(self.enable_crop_jitter_in_name, index)
 
-        resize = transforms.Resize(scale_resolution, interpolation=transforms.InterpolationMode.BILINEAR, antialias=True)
+        resize = transforms.Resize(scale_resolution, interpolation=transforms.InterpolationMode.BILINEAR,
+                                   antialias=True)
         image = resize(image)
 
         if enable_crop_jitter:
@@ -1156,7 +1157,7 @@ class DiskCache(PipelineModule):
 class RamCache(PipelineModule):
     def __init__(
             self,
-            names: list[str] = None,
+            names: list[str],
     ):
         super(RamCache, self).__init__()
         self.names = names
@@ -1193,6 +1194,68 @@ class RamCache(PipelineModule):
 
     def get_item(self, index: int, requested_name: str = None) -> dict:
         return self.cache[index]
+
+
+class PartialRamCache(PipelineModule):
+    def __init__(
+            self,
+            names: list[str],
+            cache_steps: int,
+            enter_fun: Callable,
+            exit_fun: Callable,
+    ):
+        super(PartialRamCache, self).__init__()
+        self.names = names
+        self.cache_steps = cache_steps,
+        self.enter_fun = enter_fun
+        self.exit_fun = exit_fun
+
+        self.next_cache_index = 0
+        self.cache = []
+
+    def length(self) -> int:
+        return self.get_previous_length(self.names[0])
+
+    def get_inputs(self) -> list[str]:
+        return self.names
+
+    def get_outputs(self) -> list[str]:
+        return self.names
+
+    def start_next_epoch(self):
+        self.next_cache_index = -1
+        self.cache = []
+
+    def start_next_step(self):
+        if len(self.cache) == 0:
+            self.enter_fun()
+
+            previous_length = self.get_previous_length(self.names[0])
+            length = previous_length - self.next_cache_index
+            length = min(length, self.pipeline.batch_size * self.cache_steps)
+
+            for i in range(length):
+                index = self.next_cache_index
+
+                item = {}
+                for name in self.names:
+                    item[name] = self.get_previous_item(name, index)
+
+                self.cache.append(item)
+                self.next_cache_index += 1
+
+            self.exit_fun()
+
+    def get_item(self, index: int, requested_name: str = None) -> dict:
+        # throw on random access
+        if index != self.next_cache_index - len(self.cache):
+            raise RandomAccessNotSupported(self)
+
+        # reset next_cache_index after the last item to support
+        if index == self.get_previous_length(self.names[0]) - 1:
+            self.next_cache_index = 0
+
+        return self.cache.pop(0)
 
 
 class AspectBatchSorting(PipelineModule):
@@ -1285,6 +1348,98 @@ class AspectBatchSorting(PipelineModule):
             item[name] = self.get_previous_item(name, index)
 
         return item
+
+
+class InlineAspectBatchSorting(PipelineModule):
+    def __init__(self, resolution_in_name: str, names: [str], batch_size: int, sort_resolutions_for_each_epoch: bool):
+        super(InlineAspectBatchSorting, self).__init__()
+        self.resolution_in_name = resolution_in_name
+        self.names = names
+        self.batch_size = batch_size
+        self.sort_resolutions_for_each_epoch = sort_resolutions_for_each_epoch
+
+        self.bucket_dict = {}
+        self.index_list = []
+        self.next_cache_index = 0
+        self.next_expected_index = 0
+        self.current_resolution = None
+
+    def length(self) -> int:
+        return len(self.index_list)
+
+    def get_inputs(self) -> list[str]:
+        return [self.resolution_in_name] + self.names
+
+    def get_outputs(self) -> list[str]:
+        return self.names
+
+    def shuffle(self) -> list[int]:
+        rand = self._get_rand()
+
+        length = self.get_previous_length(self.resolution_in_name)
+        index_list = list(range(length))
+        rand.shuffle(index_list)
+        return index_list
+
+    def __reset(self):
+        self.next_expected_index = 0
+        self.bucket_dict = {}
+        self.index_list = self.shuffle()
+        self.next_cache_index = 0
+        self.current_resolution = None
+
+    def start_next_epoch(self):
+        self.__reset()
+
+    def get_item(self, index: int, requested_name: str = None) -> dict:
+        if index != self.next_expected_index and self.next_expected_index == 0:
+            # if index is not the expected index, but it's the start of iteration:
+            # skip elements before index and start iterating.
+            # this can skip too many items, but only up to num_buckets * batch_size
+            self.next_expected_index = index
+        elif index != self.next_expected_index:
+            raise RandomAccessNotSupported(self)
+        self.next_expected_index += 1
+
+        if self.current_resolution is not None:
+            # if a bucket is currently returned,
+            current_bucket = self.bucket_dict[self.current_resolution]
+            item = current_bucket.pop(0)
+            if len(current_bucket) == 0:
+                self.current_resolution = None
+            return item
+
+        while self.next_cache_index < len(self.index_list):
+            next_index = self.index_list[self.next_cache_index]
+            self.next_cache_index += 1
+
+            item = {}
+            for name in self.names:
+                item[name] = self.get_previous_item(name, next_index)
+
+            if self.resolution_in_name in item:
+                resolution = item[self.resolution_in_name]
+            else:
+                resolution = self.get_previous_item(self.resolution_in_name, next_index)
+
+            if resolution not in self.bucket_dict:
+                self.bucket_dict[resolution] = []
+
+            self.bucket_dict[resolution].append(item)
+
+            if len(self.bucket_dict[resolution]) == self.pipeline.batch_size:
+                bucket = self.bucket_dict[resolution]
+                item = bucket.pop(0)
+                if len(bucket) > 0:
+                    self.current_resolution = resolution
+                else:
+                    self.current_resolution = None
+
+                return item
+
+        # end of iteration reached, reset
+        self.__reset()
+        raise StopIteration
 
 
 class GenerateMaskedConditioningImage(PipelineModule):

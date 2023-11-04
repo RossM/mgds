@@ -5,7 +5,7 @@ from random import Random
 from typing import Any
 
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, IterableDataset
 
 
 class PipelineModule(metaclass=ABCMeta):
@@ -121,6 +121,13 @@ class PipelineModule(metaclass=ABCMeta):
         """
         pass
 
+    def start_next_step(self):
+        """
+        Called once before each step.
+        If gradient accumulation is used, it should not be called while accumulating gradients
+        """
+        pass
+
     def get_meta(self, name: str) -> Any:
         """
         Called to return meta information about this module.
@@ -208,6 +215,11 @@ class OutputPipelineModule(PipelineModule):
         return item
 
 
+class RandomAccessNotSupported(Exception):
+    def __init__(self, module):
+        super().__init__(f"{type(module).__name__} does not support random access")
+
+
 class LoadingPipeline:
     device: torch.device
     dtype: torch.dtype
@@ -256,6 +268,8 @@ class LoadingPipeline:
 
         self.current_epoch = -1
         self.last_initialized_epoch = -1
+
+        self.current_sample_index = 0
 
     def __flatten(self, data: list | object) -> list:
         if isinstance(data, list):
@@ -320,15 +334,26 @@ class LoadingPipeline:
 
         self.last_initialized_epoch = self.current_epoch
 
-    def get_item(self, index: int) -> dict:
         # for the initial epoch, initial_epoch_sample defines the amount of samples to skip
         if self.current_epoch == self.initial_epoch:
-            index += self.initial_epoch_sample
+            self.current_sample_index = self.initial_epoch_sample
+        else:
+            self.current_sample_index = 0
 
+    def start_next_step(self):
+        for module in self.modules:
+            module.start_next_step()
+
+    def __get_item(self, index: int) -> dict:
         return self.output_module.get_item(index)
 
+    def __next__(self):
+        item = self.__get_item(self.current_sample_index)
+        self.current_sample_index += 1
+        return item
 
-class MGDS(Dataset):
+
+class MGDS(IterableDataset):
     device: torch.device
     dtype: torch.dtype
     allow_mixed_precision: bool
@@ -359,14 +384,17 @@ class MGDS(Dataset):
     def __len__(self):
         return self.loading_pipeline.length()
 
-    def __getitem__(self, index):
-        return self.loading_pipeline.get_item(index)
+    def __iter__(self):
+        return self.loading_pipeline
 
     def approximate_length(self) -> int:
         return self.loading_pipeline.approximate_length()
 
     def start_next_epoch(self):
         self.loading_pipeline.start_next_epoch()
+
+    def start_next_step(self):
+        self.loading_pipeline.start_next_step()
 
 
 class TrainDataLoader(DataLoader):

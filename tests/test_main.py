@@ -8,7 +8,7 @@ from src.mgds.TransformersDataLoaderModules import *
 
 DEVICE = 'cuda'
 DTYPE = torch.float32
-BATCH_SIZE = 1
+BATCH_SIZE = 2
 
 
 def test():
@@ -20,7 +20,7 @@ def test():
     tokenizer = CLIPTokenizer.from_pretrained(os.path.join(depth_model_path, 'tokenizer'))
 
     input_modules = [
-        CollectPaths(concept_in_name='concept', path_in_name='path', name_in_name='name', path_out_name='image_path', concept_out_name='concept', extensions=['.png', '.jpg'], include_postfix=None, exclude_postfix=['-masklabel'], include_subdirectories_in_name='concept.include_subdirectories'),
+        CollectPaths(concept_in_name='concept', path_in_name='path', name_in_name='name', path_out_name='image_path', concept_out_name='concept', extensions=['.png', '.jpg', '.webp'], include_postfix=None, exclude_postfix=['-masklabel'], include_subdirectories_in_name='concept.include_subdirectories'),
         ModifyPath(in_name='image_path', out_name='mask_path', postfix='-masklabel', extension='.png'),
         ModifyPath(in_name='image_path', out_name='prompt_path', postfix='', extension='.txt'),
         LoadImage(path_in_name='image_path', image_out_name='image', range_min=-1.0, range_max=1.0),
@@ -43,28 +43,30 @@ def test():
         Downscale(in_name='depth', out_name='latent_depth', factor=8),
         ShuffleTags(text_in_name='prompt', enabled_in_name='concept.enable_tag_shuffling', delimiter_in_name='concept.tag_delimiter', keep_tags_count_in_name='concept.keep_tags_count', text_out_name='prompt'),
         Tokenize(in_name='prompt', tokens_out_name='tokens', mask_out_name='tokens_mask', max_token_length=77, tokenizer=tokenizer),
-        # DiskCache(cache_dir='cache', split_names=['latent_image_distribution', 'latent_mask', 'latent_conditioning_image_distribution', 'latent_depth', 'tokens'], aggregate_names=['crop_resolution']),
+        DiskCache(cache_dir='cache', split_names=['latent_image_distribution', 'latent_mask', 'latent_conditioning_image_distribution', 'latent_depth', 'tokens'], aggregate_names=['crop_resolution']),
         SampleVAEDistribution(in_name='latent_image_distribution', out_name='latent_image', mode='mean'),
         SampleVAEDistribution(in_name='latent_conditioning_image_distribution', out_name='latent_conditioning_image', mode='mean'),
-        RandomLatentMaskRemove(latent_mask_name='latent_mask', latent_conditioning_image_name='latent_conditioning_image', replace_probability=0.1, vae=vae, possible_resolutions_in_name='possible_resolutions')
+        RandomLatentMaskRemove(latent_mask_name='latent_mask', latent_conditioning_image_name='latent_conditioning_image', replace_probability=0.1, vae=vae, possible_resolutions_in_name='possible_resolutions'),
+        InlineAspectBatchSorting(resolution_in_name='crop_resolution', names=['image_path', 'latent_image', 'latent_conditioning_image', 'latent_mask', 'latent_depth', 'tokens'], batch_size=BATCH_SIZE, sort_resolutions_for_each_epoch=True),
+
     ]
 
     debug_modules = [
         DecodeVAE(in_name='latent_image', out_name='decoded_image', vae=vae),
         DecodeVAE(in_name='latent_conditioning_image', out_name='decoded_conditioning_image', vae=vae),
+        Upscale(in_name='latent_mask', out_name='decoded_mask', factor=8),
         DecodeTokens(in_name='tokens', out_name='decoded_text', tokenizer=tokenizer),
-        SaveImage(image_in_name='decoded_image', original_path_in_name='image_path', path='debug', in_range_min=-1, in_range_max=1),
-        SaveImage(image_in_name='mask', original_path_in_name='image_path', path='debug', in_range_min=0, in_range_max=1),
-        SaveImage(image_in_name='decoded_conditioning_image', original_path_in_name='image_path', path='debug', in_range_min=-1, in_range_max=1),
-        SaveText(text_in_name='decoded_text', original_path_in_name='image_path', path='debug'),
+        SaveImage(image_in_name='decoded_image', original_path_in_name='image_path', path='debug', include_index=True, in_range_min=-1, in_range_max=1),
+        SaveImage(image_in_name='decoded_mask', original_path_in_name='image_path', path='debug', include_index=True, in_range_min=0, in_range_max=1),
+        SaveImage(image_in_name='decoded_conditioning_image', original_path_in_name='image_path', path='debug', include_index=True, in_range_min=-1, in_range_max=1),
+        SaveText(text_in_name='decoded_text', original_path_in_name='image_path', include_index=True, path='debug'),
         # SaveImage(image_in_name='depth', original_path_in_name='image_path', path='debug', in_range_min=-1, in_range_max=1),
         # SaveImage(image_in_name='latent_mask', original_path_in_name='image_path', path='debug', in_range_min=0, in_range_max=1),
         # SaveImage(image_in_name='latent_depth', original_path_in_name='image_path', path='debug', in_range_min=-1, in_range_max=1),
     ]
 
     output_modules = [
-        AspectBatchSorting(resolution_in_name='crop_resolution', names=['latent_image', 'latent_conditioning_image', 'latent_mask', 'latent_depth', 'tokens'], batch_size=BATCH_SIZE, sort_resolutions_for_each_epoch=True),
-        OutputPipelineModule(names=['latent_image', 'latent_conditioning_image', 'latent_mask', 'latent_depth', 'tokens'])
+        OutputPipelineModule(names=['latent_image', 'latent_conditioning_image', 'latent_mask', 'latent_depth', 'tokens']),
     ]
 
     ds = MGDS(
@@ -74,7 +76,7 @@ def test():
         concepts=[
             {
                 'name': 'DS',
-                'path': '..\\datasets\\dataset1',
+                'path': '..\\datasets\\dataset8-random-aspect',
                 'random_circular_crop': True,
                 'random_mask_rotate_crop': True,
                 'random_flip': True,
