@@ -352,7 +352,8 @@ class LoadImage(PipelineModule):
             image = image.convert(self.mode)
 
             t = transforms.ToTensor()
-            image_tensor = t(image).to(device=self.pipeline.device, dtype=self.pipeline.dtype)
+            #image_tensor = t(image).to(device=self.pipeline.device, dtype=self.pipeline.dtype)
+            image_tensor = t(image).to(dtype=self.pipeline.dtype)
 
             image_tensor = image_tensor * (self.range_max - self.range_min) + self.range_min
         except FileNotFoundError:
@@ -479,6 +480,7 @@ class ScaleCropImage(PipelineModule):
 
         resize = transforms.Resize(scale_resolution, interpolation=transforms.InterpolationMode.BILINEAR, antialias=True)
         image = resize(image)
+        image = image.to(device=self.pipeline.device)
 
         if enable_crop_jitter:
             y_offset = rand.randint(0, scale_resolution[0] - crop_resolution[0])
